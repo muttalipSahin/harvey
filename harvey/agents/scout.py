@@ -177,7 +177,8 @@ class Scout:
         # prospects are unreachable and just fill the pipeline.
         if self.config.channels.linkedin.enabled and self.env.linkedin_email:
             strategies.append(("profile_search", self._prospect_via_profile_search))
-        strategies.append(("company_discovery", self._prospect_via_company_discovery))
+        if self.config.icp.web_discovery:
+            strategies.append(("company_discovery", self._prospect_via_company_discovery))
 
         for name, strategy in strategies:
             # Budget per strategy, not per cycle: a shared one let the
