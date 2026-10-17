@@ -31,7 +31,7 @@ import logging
 import random
 import re
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -78,6 +78,8 @@ BACKOFF_BASE = 1.5  # seconds; grows exponentially per attempt
 MAX_RESULTS_PER_QUERY = 20
 MAX_COMPANIES_PER_CYCLE = 10
 MAX_PROSPECTS_PER_CYCLE = 25
+# Claude reads a team page only when the selector pass found nobody.
+MAX_TEAM_EXTRACTIONS_PER_CYCLE = 5
 
 # Hunter domain-searches per heartbeat. The monthly budget itself is shared
 # with email-pattern lookups and set by HUNTER_MONTHLY_SEARCHES (see
@@ -145,6 +147,7 @@ class Scout:
         self._queries_this_cycle = 0
         self._seen_prospect_keys = set()
         self._seen_domains = set()
+        self._team_llm_calls = 0
 
         # Most strategies only use the first industry/city (or two), so a
         # fixed order would search the same pair forever. Order means nothing
@@ -1361,18 +1364,38 @@ Respond ONLY with the JSON array."""
 
         return info
 
+    # Links that usually lead to a team page, matched on href or link text.
+    _TEAM_LINK = re.compile(
+        r"team|people|staff|about|leadership|mensen|medewerk|over-?ons|"
+        r"wie-?zijn-?wij|bureau|organisatie", re.I)
+
     async def _scrape_team_page(self, domain: str) -> list[dict]:
-        """Try to find and scrape a company's team/about page."""
+        """Find a company's team page(s) and pull the named people off them."""
         team_paths = ["/team", "/about", "/about-us", "/our-team", "/people",
-                      "/leadership", "/about/team", "/company/team", "/staff"]
+                      "/leadership", "/about/team", "/company/team", "/staff",
+                      "/over-ons", "/ons-team", "/het-team", "/medewerkers"]
         members = []
 
-        base, _ = await self._resolve_base_url(domain)
+        base, home = await self._resolve_base_url(domain)
         if not base:
             return members
 
-        for path in team_paths:
-            url = f"{base}{path}"
+        # The homepage's own links first: no fixed path list keeps up with
+        # /onze-mensen, /overons, /bureau ... The fixed paths are the fallback.
+        urls: list[str] = []
+        home_soup = self._safe_soup(home.text) if home is not None else None
+        if home_soup is not None:
+            for a in home_soup.select("a[href]"):
+                href = self._attr_str(a.get("href"))
+                if not (self._TEAM_LINK.search(href) or self._TEAM_LINK.search(a.get_text())):
+                    continue
+                url = urljoin(base + "/", href).split("#")[0]
+                if self._extract_domain(url) == domain and url not in urls:
+                    urls.append(url)
+        urls = urls[:4] or [f"{base}{p}" for p in team_paths]
+
+        page_texts: list[str] = []
+        for url in urls:
             resp = await self._fetch(url, timeout=SCRAPE_TIMEOUT, retries=1)
             if resp is None:
                 continue
@@ -1384,6 +1407,7 @@ Respond ONLY with the JSON array."""
             # Harvest any real address on the page — one confirmed email
             # reveals the domain's whole pattern (learned once, reused free).
             await self._learn_pattern_from_page(soup, resp.text, domain)
+            page_texts.append(self._page_text(soup))
 
             try:
                 cards = soup.select(
@@ -1412,7 +1436,8 @@ Respond ONLY with the JSON array."""
                     continue
                 if any(ch.isdigit() for ch in name):
                     continue
-                if not re.match(r"^[A-Za-z][A-Za-z.'\- ]+$", name):
+                # Any letter, not just A-Z: "Hélène", "Jürgen" are names too.
+                if not re.match(r"^[^\W\d_](?:[^\W\d_]|[.'\- ])+$", name):
                     continue
 
                 parts = name.split(" ", 1)
@@ -1428,6 +1453,12 @@ Respond ONLY with the JSON array."""
             if members:
                 break
 
+        # Most small-business sites don't mark people up with team/member
+        # classes at all, so the selector pass finds nothing on a page that
+        # plainly lists "Ted Maters — architect". Let Claude read the text.
+        if not members and page_texts:
+            members = await self._people_with_claude(domain, "\n\n".join(page_texts))
+
         # Dedup members by (first,last).
         seen = set()
         unique = []
@@ -1438,6 +1469,59 @@ Respond ONLY with the JSON array."""
             seen.add(key)
             unique.append(m)
         return unique
+
+    @staticmethod
+    def _page_text(soup) -> str:
+        for tag in soup(["script", "style", "noscript", "svg", "nav"]):
+            tag.decompose()
+        text = re.sub(r"\n\s*\n+", "\n", soup.get_text("\n"))
+        return text.strip()[:4000]
+
+    async def _people_with_claude(self, domain: str, page_text: str) -> list[dict]:
+        """Named people on a team page, read by Claude. [] when over budget."""
+        # ponytail: flat per-cycle cap keeps a 10-company backfill from
+        # spending ~10 calls every 15 minutes; companies past it fall back to
+        # selector-only and come round again when their check goes stale.
+        if getattr(self, "_team_llm_calls", 0) >= MAX_TEAM_EXTRACTIONS_PER_CYCLE:
+            return []
+        self._team_llm_calls = getattr(self, "_team_llm_calls", 0) + 1
+
+        prompt = f"""Below is text from the team / about pages of {domain}.
+List every named person who works there. For each give first_name, last_name,
+title (as written on the page, may be empty) and decision_maker: true if they
+likely decide on buying outside services — owner, founder, director, partner,
+managing or commercial lead, or the principal / namesake of a small firm.
+Skip testimonials, clients and people from other companies. [] if nobody is named.
+
+[{{"first_name": "...", "last_name": "...", "title": "...", "decision_maker": true}}]
+
+PAGE TEXT:
+{page_text[:6000]}"""
+        try:
+            result = await self.brain.think_json(prompt, agent="scout", task="extract_team")
+        except Exception as e:
+            logger.warning(f"Scout: team extraction errored for {domain}: {e}")
+            return []
+        if not isinstance(result, list):
+            return []
+
+        people = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            first = str(item.get("first_name") or "").strip()
+            last = str(item.get("last_name") or "").strip()
+            name = f"{first} {last}"
+            if not (first and last and 3 <= len(name) <= 50):
+                continue
+            if not re.match(r"^[^\W\d_](?:[^\W\d_]|[.'\- ])+$", name):
+                continue
+            people.append({
+                "first_name": first, "last_name": last,
+                "title": str(item.get("title") or "")[:120],
+                "decision_maker": item.get("decision_maker") is True,
+            })
+        return people
 
     async def _contacts_from_company(
         self,
@@ -1458,7 +1542,9 @@ Respond ONLY with the JSON array."""
         contacts: list[Prospect] = []
         for member in team_members:
             title = member.get("title", "")
-            if not self._title_matches_icp(title):
+            # Small firms rarely write "owner" on the team page; Claude's
+            # decision_maker call covers the architect whose name is on the door.
+            if not (member.get("decision_maker") or self._title_matches_icp(title)):
                 continue
 
             first_name = member.get("first_name", "")
