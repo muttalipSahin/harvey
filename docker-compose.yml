@@ -2,17 +2,30 @@ services:
   harvey:
     build: .
     env_file: .env
+    # Heartbeat loop in the background (its PID in data/harvey.pid, so the
+    # dashboard sees it as running and its Stop button works), dashboard in
+    # front. ponytail: nothing restarts the loop if it dies while the
+    # dashboard stays up — use the dashboard's Start, or restart the container.
+    command: >
+      sh -c "python -m harvey >> /app/data/harvey.log 2>&1 &
+             echo $$! > /app/data/harvey.pid;
+             exec python -m harvey.cli dashboard --host 0.0.0.0"
+    ports:
+      # Localhost only — the dashboard has no login. On a VPS, reach it with
+      # an SSH tunnel: ssh -L 5555:localhost:5555 user@your-vps
+      - "127.0.0.1:5555:5555"
     volumes:
       # Persist database across restarts
       - ./data:/app/data
-      # Mount config for easy editing without rebuild
+      # Config for editing without rebuild. harvey.local.yaml (written by
+      # `harvey train`) must exist before `docker compose up`.
       - ./harvey.yaml:/app/harvey.yaml:ro
+      - ./harvey.local.yaml:/app/harvey.local.yaml
       - ./prompts:/app/prompts:ro
       - ./skills:/app/skills
-      # Mount Claude auth (required for Max plan usage).
-      # Not read-only: the CLI refreshes OAuth tokens in place.
-      # The container runs as non-root user "harvey" (uid 1000).
-      - ~/.claude:/home/harvey/.claude
+      # Claude CLI state. Auth comes from CLAUDE_CODE_OAUTH_TOKEN in .env
+      # (`claude setup-token`), so no browser login is needed on a server.
+      - claude-home:/home/harvey/.claude
     restart: unless-stopped
     init: true
     logging:
@@ -20,3 +33,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  claude-home:

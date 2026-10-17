@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 # Non-root user; owns app data and the shared browser install
 RUN useradd --create-home --uid 1000 harvey \
-    && mkdir -p /app/data \
-    && chown -R harvey:harvey /app /ms-playwright
+    && mkdir -p /app/data /home/harvey/.claude \
+    && chown -R harvey:harvey /app /ms-playwright /home/harvey/.claude
 
 # Copy project (config/prompts are typically bind-mounted over these at runtime)
 COPY --chown=harvey:harvey harvey/ harvey/
@@ -34,8 +34,9 @@ USER harvey
 ENV PATH="/home/harvey/.local/bin:${PATH}"
 
 # Claude Code CLI, installed as the runtime user so ~/.local/bin is correct.
-# `|| true` keeps the build working offline; the CLI is required at runtime.
-RUN curl -fsSL https://claude.ai/install.sh | sh || true
+# The installer is a bash script (sh/dash can't parse it). No `|| true`:
+# Harvey can't think without the CLI, so a failed install fails the build.
+RUN curl -fsSL https://claude.ai/install.sh | bash && claude --version
 
 # Healthy = the heartbeat loop has touched the database recently
 # (2h window tolerates long heartbeat intervals and quiet-hour idling).
