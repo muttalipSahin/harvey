@@ -126,6 +126,12 @@ class Scout:
         self._seen_prospect_keys = set()
         self._seen_domains = set()
 
+        # Most strategies only use the first industry/city (or two), so a
+        # fixed order would search the same pair forever. Order means nothing
+        # elsewhere, so shuffle in place and each cycle covers a new slice.
+        random.shuffle(self.config.icp.industries)
+        random.shuffle(self.config.icp.geography)
+
         prospects_found = 0
 
         # Each strategy is isolated so one failing does not abort the cycle.
@@ -1052,7 +1058,6 @@ class Scout:
         queries = []
         industries = self.config.icp.industries or [""]
         geos = self.config.icp.geography or [""]
-        size = self.config.icp.company_size or ""
 
         for industry in industries[:2]:
             geo = geos[0] if geos else ""
@@ -1062,8 +1067,8 @@ class Scout:
                 parts.append(f'"{industry}"')
             if geo:
                 parts.append(f'"{geo}"')
-            if size:
-                parts.append(f'"{size}"')
+            # No company_size here: "10-200 employees" as an exact phrase
+            # matches almost no site. Size is judged at scoring time instead.
             parts.append("company")
             queries.append(" ".join(parts))
 
