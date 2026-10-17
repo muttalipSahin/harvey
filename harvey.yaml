@@ -5,6 +5,7 @@ persona:
   email: "harvey@yourcompany.com"
   linkedin: "linkedin.com/in/harvey-yourcompany"
   tone: "professional, consultative, confident"
+  language: ""                # language emails + replies go out in, e.g. "Dutch" (empty = English)
 
 product:
   name: "Your Product"

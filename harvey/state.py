@@ -914,6 +914,19 @@ class StateManager:
             )
             await db.commit()
 
+    async def requeue_held_outbox(self, prospect_id: str, email: str) -> int:
+        """Send mail the deliverability gate held back for this prospect back
+        to review, addressed to ``email`` — once a human has vouched for it."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'pending_review', to_email = ?, error = '', "
+                "updated_at = ? WHERE prospect_id = ? AND status = 'failed' "
+                "AND error LIKE 'gate:%not deliverable%'",
+                (_norm(email), _utcnow().isoformat(), prospect_id),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def approve_outbox(self, item_id: str | None = None) -> int:
         """Approve one pending item, or ALL pending when item_id is None."""
         async with self._connect() as db:

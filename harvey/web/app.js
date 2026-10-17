@@ -701,7 +701,12 @@ async function loadSettings() {
     el.textContent = ok ? okLabel : 'not set';
   };
 
-  // Non-secret values repopulate
+  // Non-secret values repopulate. A language typed into the YAML by hand
+  // gets its own option so saving the form doesn't silently drop it.
+  const langEl = document.getElementById('language');
+  if (data.language && ![...langEl.options].some(o => o.value === data.language))
+    langEl.add(new Option(data.language, data.language));
+  langEl.value = data.language || '';
   document.getElementById('gmail-id').value = data.gmail_client_id || '';
   document.getElementById('smtp-host').value = data.smtp_host || '';
   document.getElementById('smtp-port').value = data.smtp_port || '';
@@ -728,6 +733,16 @@ async function loadSettings() {
   tag('reoon-status', data.reoon_api_key_set, 'set');
   tag('zerobounce-status', data.zerobounce_api_key_set, 'set');
   tag('hunter-status', data.hunter_api_key_set, 'set');
+}
+
+async function saveLanguage() {
+  const language = document.getElementById('language').value;
+  const data = await api('/api/settings/language', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({language})
+  });
+  if (data && data.success) showToast('Saved — restart Harvey (Controls) to apply.', 'success');
+  else showToast((data && data.message) || 'Save failed — is the dashboard still running?', 'error');
 }
 
 function saveGmail() {
@@ -1268,7 +1283,7 @@ async function loadProspects() {
   }
   let html = '<div class="table-card"><table><thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Email</th><th>Phone</th><th>Status</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>';
   data.forEach((p, i) => {
-    const emailV = p.email ? (escHtml(p.email) + emailTag(p)) : '';
+    const emailV = p.email ? (escHtml(p.email) + emailTag(p) + emailActions(p, i)) : '';
     const phoneV = p.phone ? (escHtml(p.phone) + (p.phone_verified ? ' <span class="verified">&#10003;</span>' : '')) : '';
     html += '<tr><td>' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</td>' +
       '<td>' + escHtml(p.title) + '</td><td>' + escHtml(p.company) + '</td>' +
@@ -1277,6 +1292,55 @@ async function loadProspects() {
       '<td><button class="btn btn-secondary btn-sm" onclick="fbProspect(' + i + ')">Feedback</button></td></tr>';
   });
   el.innerHTML = html + '</tbody></table></div>';
+}
+
+// Hand-verification: for addresses no verifier could confirm. An invalid one
+// only gets Edit — approving it unchanged would overrule a real "no".
+function emailActions(p, i) {
+  const status = p.email_status || (p.email_verified ? 'verified' : 'guess');
+  if (status === 'verified') return '';
+  const btn = (cls, label, call) =>
+    '<button class="btn ' + cls + ' btn-sm" onclick="' + call + '">' + label + '</button>';
+  return '<div style="margin-top:4px;display:flex;gap:4px">' +
+    (status !== 'invalid' ? btn('btn-primary', 'Approve', 'vouchEmail(' + i + ')') : '') +
+    btn('btn-secondary', 'Edit', 'vouchEmail(' + i + ', true)') +
+    (status !== 'invalid' ? btn('btn-secondary', 'Reject', 'rejectEmail(' + i + ')') : '') +
+  '</div>';
+}
+
+async function postEmailAction(p, payload) {
+  const r = await fetch('/api/prospects/' + encodeURIComponent(p.id) + '/email', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  }).catch(() => null);
+  const data = r ? await r.json().catch(() => null) : null;
+  if (!data || !data.success) {
+    showToast((data && data.message) || 'Couldn\'t save — is the dashboard still running?', 'error');
+    return null;
+  }
+  return data;
+}
+
+async function vouchEmail(i, edit) {
+  const p = _prospects[i];
+  let email = p.email;
+  if (edit) {
+    email = prompt('Correct address for ' + p.first_name + ' ' + p.last_name + ':', p.email);
+    if (!email) return;
+  }
+  const data = await postEmailAction(p, {action: 'approve', email: email});
+  if (!data) return;
+  showToast(data.requeued
+    ? 'Approved — ' + data.requeued + ' email(s) back in the Outbox for review.'
+    : 'Approved — Harvey will write to ' + data.email + '.', 'success');
+  loadProspects();
+}
+
+async function rejectEmail(i) {
+  if (await postEmailAction(_prospects[i], {action: 'reject'})) {
+    showToast('Rejected — Harvey won\'t send to this address.', 'success');
+    loadProspects();
+  }
 }
 
 async function loadCampaigns() {

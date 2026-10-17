@@ -144,7 +144,8 @@
 <!-- Contacts -->
 <div id="prospects" class="section">
   <div class="section-head" style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px">
-    <div><h2>Contacts</h2><p>People Harvey has found and verified.</p></div>
+    <div><h2>Contacts</h2><p>People Harvey has found and verified. Approve an address you've checked
+      yourself and Harvey treats it as verified.</p></div>
     <div style="display:flex;gap:8px;flex-shrink:0">
       <a class="btn btn-secondary btn-sm" href="/api/export/prospects.csv" download>Export deliverable CSV</a>
       <a class="btn btn-secondary btn-sm" href="/api/export/prospects.csv?all=true" download>Export all</a>
@@ -242,6 +243,20 @@
         <div id="instantly-test-result"></div></div>
       <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Language</h2>
+    <p class="lede">The language Harvey writes every email and reply in. A prospect who answers in another language gets a reply in theirs. Restart Harvey (Controls) after changing it.</p>
+    <div class="form-group"><label class="form-label" for="language">Email language</label>
+      <select class="form-input" id="language">
+        <option value="">English</option>
+        <option value="Dutch">Dutch (Nederlands)</option>
+        <option value="German">German (Deutsch)</option>
+        <option value="French">French (Français)</option>
+        <option value="Spanish">Spanish (Español)</option>
+      </select></div>
+    <button class="btn btn-primary btn-sm" onclick="saveLanguage()">Save language</button>
   </div>
 
   <div class="card">

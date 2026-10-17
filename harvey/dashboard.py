@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -254,6 +255,16 @@ def _current_provider() -> str:
         return "instantly"
 
 
+def _current_language() -> str:
+    """Read persona.language from the active config (best-effort)."""
+    try:
+        with open(_resolve_config_file(), encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return (cfg.get("persona") or {}).get("language") or ""
+    except Exception:
+        return ""
+
+
 @app.get("/api/settings")
 async def get_settings():
     """Get current settings — presence flags only for secrets, never raw values."""
@@ -278,6 +289,7 @@ async def get_settings():
 
     return {
         "provider": _current_provider(),
+        "language": _current_language(),
         # Non-secret values echo back so fields repopulate; secrets are
         # presence-only so keys never leave the box.
         "instantly_api_key_set": is_set("INSTANTLY_API_KEY"),
@@ -327,6 +339,43 @@ async def save_env_settings(request: Request):
                 logger.warning("Failed to write .env: %s", e)
                 return {"success": False, "message": "Could not write .env file."}
     return {"success": True}
+
+
+@app.post("/api/settings/language")
+async def save_language(request: Request):
+    """Set persona.language in the active config file. The heartbeat reads
+    config once at start, so Harvey needs a restart to pick it up."""
+    try:
+        data = await request.json()
+        language = str(data.get("language") or "").strip()[:40]
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid request body."}, status_code=400)
+    path = _resolve_config_file()
+    async with _env_lock:
+        try:
+            # Edit the one line rather than re-dumping the YAML, which would
+            # strip every comment the user wrote in their config.
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            start = next(i for i, l in enumerate(lines) if re.match(r"persona:\s*(#.*)?$", l.rstrip()))
+            end = start + 1
+            while end < len(lines) and (lines[end][:1] in (" ", "\t") or not lines[end].strip()):
+                end += 1
+            indent = next((re.match(r"\s*", l).group() for l in lines[start + 1:end] if l.strip()), "  ")
+            new_line = f"{indent}language: {json.dumps(language)}\n"
+            for i in range(start + 1, end):
+                if re.match(r"\s+language:", lines[i]):
+                    lines[i] = new_line
+                    break
+            else:
+                lines.insert(start + 1, new_line)
+            text = "".join(lines)
+            if ((yaml.safe_load(text) or {}).get("persona") or {}).get("language", "") != language:
+                raise ValueError("edit didn't round-trip")
+            path.write_text(text, encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to write %s: %s", path, e)
+            return {"success": False, "message": f"Could not write {path.name}."}
+    return {"success": True, "language": language}
 
 
 @app.post("/api/settings/test-instantly")
@@ -688,13 +737,50 @@ async def get_usage():
 
 @app.get("/api/prospects")
 async def get_prospects():
-    rows = await query_db("SELECT * FROM prospects ORDER BY created_at DESC LIMIT 200")
+    # Addresses waiting on a human first — they're what the Contacts tab is
+    # opened for when the Today card points here.
+    rows = await query_db(
+        "SELECT * FROM prospects ORDER BY "
+        "(email != '' AND email_status IN ('guess','risky')) DESC, "
+        "created_at DESC LIMIT 200"
+    )
     return rows
 
 
 def _state():
     from harvey.state import StateManager
     return StateManager(db_path=str(DB_PATH))
+
+
+@app.post("/api/prospects/{prospect_id}/email")
+async def prospect_email(prospect_id: str, request: Request):
+    """Vouch for (optionally correcting) or reject an address no verifier
+    could confirm. Approving stands in for a verifier: Harvey then treats the
+    address as verified, and mail the gate held back returns to the Outbox."""
+    from harvey.agents.sender import EMAIL_RE
+
+    body = await request.json()
+    action = body.get("action")
+    if action not in ("approve", "reject"):
+        return JSONResponse({"success": False, "message": "unknown action"}, status_code=400)
+    try:
+        state = _state()
+        await state.init_db()
+        prospect = await state.get_prospect(prospect_id)
+        if not prospect:
+            return JSONResponse({"success": False, "message": "no such contact"}, status_code=404)
+        if action == "reject":
+            await state.update_prospect_email(prospect_id, prospect.email, "invalid")
+            return {"success": True}
+        email = (body.get("email") or prospect.email or "").strip().lower()
+        if not EMAIL_RE.match(email):
+            return JSONResponse({"success": False, "message": "That isn't a valid address."},
+                                status_code=400)
+        await state.update_prospect_email(prospect_id, email, "verified")
+        requeued = await state.requeue_held_outbox(prospect_id, email)
+        return {"success": True, "email": email, "requeued": requeued}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
 @app.get("/api/outbox")
@@ -1121,6 +1207,21 @@ async def get_today():
                           else f"{len(pending)} emails waiting for approval"),
                 "detail": "Nothing sends until you approve it. Read them one at a time.",
                 "action": "Open the decisions desk", "tab": "outbox",
+            })
+
+        unchecked = await query_db(
+            "SELECT COUNT(*) AS n FROM prospects WHERE email != '' "
+            "AND email_status IN ('guess','risky') AND status IN ('new','queued')"
+        )
+        n_unchecked = unchecked[0]["n"] if unchecked else 0
+        if n_unchecked:
+            items.append({
+                "key": "verify", "tone": "warn",
+                "title": (f"{n_unchecked} email address needs your check" if n_unchecked == 1
+                          else f"{n_unchecked} email addresses need your check"),
+                "detail": ("No verifier could confirm these, so Harvey won't send to "
+                           "them. Approve the ones you've checked yourself."),
+                "action": "Check addresses", "tab": "prospects",
             })
 
         if open_convos:

@@ -478,6 +478,8 @@ def cmd_verify(args):
                     continue
                 await state.update_prospect_email(pid, prospect.email, status)
                 print(f"  {pid}: {prospect.email} → {status}")
+                if status == "verified" and await state.requeue_held_outbox(pid, prospect.email):
+                    print("      held-back email(s) are back in the Outbox for review")
         if args.approve or args.reject:
             return
 

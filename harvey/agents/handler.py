@@ -57,6 +57,17 @@ OPT_OUT_PATTERNS = (
     "never contact",
     "delete my info",
     "delete my data",
+    # Dutch — prospects answer in their own language
+    "afmelden",
+    "uitschrijven",
+    "haal me van",
+    "haal mij van",
+    "verwijder me",
+    "verwijder mij",
+    "niet meer mailen",
+    "geen mails meer",
+    "stop met mailen",
+    "neem geen contact",
 )
 
 # Phrases that mean a human must take over. Never auto-reply to these.
@@ -75,6 +86,13 @@ ESCALATION_PATTERNS = (
     "gdpr",
     "can-spam",
     "blacklist",
+    # Dutch
+    "advocaat",
+    "juridische stappen",
+    "aangifte",
+    "intimidatie",
+    "avg",
+    "autoriteit persoonsgegevens",
 )
 
 
@@ -652,6 +670,7 @@ Write a reply that:"""
 - Under 50 words"""
 
         prompt += "\n\nWrite ONLY the email body. No subject line, no greeting label, no signature block, no markdown."
+        prompt += self.config.persona.language_rule()
 
         response = await self.brain.think(
             prompt, session_id="harvey-handler",

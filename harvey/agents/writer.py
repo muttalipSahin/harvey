@@ -228,6 +228,7 @@ Requirements:
 - Follow every STRICT EMAIL RULE above.
 
 Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
+        prompt += self.config.persona.language_rule()
 
         result = await self.brain.think_json(
             prompt, session_id="harvey-writer",
@@ -297,6 +298,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
   {{"step": 2, "subject": "...", "body": "...", "delay_days": 3}},
   {{"step": 3, "subject": "...", "body": "...", "delay_days": 4}}
 ]"""
+        prompt += self.config.persona.language_rule()
 
         result = await self.brain.think_json(
             prompt, session_id="harvey-writer",

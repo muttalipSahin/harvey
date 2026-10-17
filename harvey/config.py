@@ -31,6 +31,23 @@ class PersonaConfig(BaseModel):
     email: str
     linkedin: str
     tone: str
+    # Language every email and reply goes out in, e.g. "Dutch". Empty → English.
+    language: str = ""
+
+    def language_rule(self) -> str:
+        """Closing prompt instruction that pins the output language — appended
+        last so it outranks the English examples earlier in the prompt."""
+        lang = self.language.strip()
+        if not lang or lang.lower() in ("en", "english"):
+            return ""
+        return (
+            f"\n\nLANGUAGE: Write every word of the subject and body in {lang}, the way "
+            f"a native {lang} speaker in this market writes business email, not "
+            "translated English. Follow that market's conventions for addressing "
+            "people and signing off. Every rule above still applies, including "
+            "avoiding the equivalents of the banned phrases. If the prospect wrote "
+            "to you in another language, answer in theirs. Keep JSON keys in English."
+        )
 
 
 class OfferConfig(BaseModel):
