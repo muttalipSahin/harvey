@@ -18,10 +18,12 @@ import email
 import email.policy
 import imaplib
 import logging
+import ssl
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
 
 import aiosmtplib
+import certifi
 
 from harvey.integrations.mail_provider import (
     InboundMessage,
@@ -31,6 +33,12 @@ from harvey.integrations.mail_provider import (
 )
 
 logger = logging.getLogger("harvey.smtp")
+
+
+def _tls_context() -> ssl.SSLContext:
+    # certifi, not the OS store: Windows only caches some roots (e.g. Strato's
+    # T-TeleSec) once something has needed them, so default verification fails.
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 class SmtpImapProvider(MailProvider):
@@ -79,6 +87,7 @@ class SmtpImapProvider(MailProvider):
                 password=self.smtp_pass,
                 start_tls=(self.smtp_port == 587),
                 use_tls=(self.smtp_port == 465),
+                tls_context=_tls_context(),
                 timeout=30,
             )
         except Exception as e:
@@ -96,7 +105,7 @@ class SmtpImapProvider(MailProvider):
 
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, ssl_context=_tls_context())
         try:
             conn.login(self.imap_user, self.imap_pass)
             conn.select("INBOX")
@@ -162,6 +171,7 @@ class SmtpImapProvider(MailProvider):
                 hostname=self.smtp_host, port=self.smtp_port,
                 start_tls=(self.smtp_port == 587),
                 use_tls=(self.smtp_port == 465), timeout=15,
+                tls_context=_tls_context(),
             )
             await smtp.connect()
             await smtp.login(self.smtp_user, self.smtp_pass)
@@ -172,7 +182,7 @@ class SmtpImapProvider(MailProvider):
         loop = asyncio.get_event_loop()
 
         def _imap_check():
-            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, ssl_context=_tls_context())
             try:
                 conn.login(self.imap_user, self.imap_pass)
             finally:
