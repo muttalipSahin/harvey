@@ -461,6 +461,46 @@ def cmd_outbox(args):
     asyncio.run(_outbox())
 
 
+def cmd_verify(args):
+    """Hand-verify addresses no verifier could resolve (guess / catch-all)."""
+    from urllib.parse import quote_plus
+    from harvey.state import StateManager
+
+    async def _verify():
+        state = StateManager()
+        await state.init_db()
+
+        for ids, status in ((args.approve, "verified"), (args.reject, "invalid")):
+            for pid in ids:
+                prospect = await state.get_prospect(pid)
+                if not prospect or not prospect.email:
+                    print(f"  {pid}: no prospect with an email under that id")
+                    continue
+                await state.update_prospect_email(pid, prospect.email, status)
+                print(f"  {pid}: {prospect.email} → {status}")
+        if args.approve or args.reject:
+            return
+
+        statuses = ["guess", "risky"] if args.risky else ["guess"]
+        todo = await state.get_prospects_by_email_status(statuses)
+        print(f"\n  To verify — {len(todo)} address(es) ({' / '.join(statuses)})")
+        print("  " + "=" * 60)
+        for p in todo[: args.limit]:
+            print(f"\n  [{p.id}] {p.first_name} {p.last_name} — {p.title} @ {p.company}")
+            print(f"  {p.email}  ({p.email_status})")
+            if p.source_url:
+                print(f"  found on: {p.source_url}")
+            print(f"  check:    https://www.google.com/search?q=%22{quote_plus(p.email)}%22")
+        if todo:
+            print("\n  Only approve an address you saw published (site, LinkedIn, a listing).")
+            print("  Approve: harvey verify --approve <id> [<id> ...]")
+            print("  Reject:  harvey verify --reject <id> [<id> ...]\n")
+        else:
+            print("  Nothing to verify.\n")
+
+    asyncio.run(_verify())
+
+
 def cmd_profile(args):
     """Read what companies' own websites say about them. Free, no Claude calls."""
     from harvey.state import StateManager
@@ -745,6 +785,14 @@ def main():
     sub.add_argument("--approve-all", action="store_true", help="Approve all pending")
     sub.add_argument("--reject", metavar="ID", default="", help="Reject one item")
     sub.set_defaults(func=cmd_outbox)
+
+    # harvey verify
+    sub = subparsers.add_parser("verify", help="Hand-verify guessed email addresses")
+    sub.add_argument("--approve", metavar="ID", nargs="+", default=[], help="Mark verified")
+    sub.add_argument("--reject", metavar="ID", nargs="+", default=[], help="Mark invalid")
+    sub.add_argument("--risky", action="store_true", help="Also list catch-all (risky) addresses")
+    sub.add_argument("--limit", type=int, default=25, help="How many to show (default 25)")
+    sub.set_defaults(func=cmd_verify)
 
     # harvey sending pause|resume|status
     sub = subparsers.add_parser("discover", help="Find businesses matching your ICP")

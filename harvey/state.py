@@ -718,6 +718,19 @@ class StateManager:
                 rows = await cursor.fetchall()
                 return [self._prospect_from_row(r) for r in rows]
 
+    async def get_prospects_by_email_status(self, statuses: list[str]) -> list[Prospect]:
+        """Prospects with an address whose email_status is one of ``statuses``."""
+        marks = ",".join("?" * len(statuses))
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT * FROM prospects WHERE email != '' AND email_status IN ({marks}) "
+                "ORDER BY score DESC, created_at DESC",
+                statuses,
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._prospect_from_row(r) for r in rows]
+
     async def update_prospect_status(self, prospect_id: str, status: str):
         async with self._connect() as db:
             await db.execute(

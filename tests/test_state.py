@@ -113,3 +113,17 @@ async def test_contacts_for_company(state):
 
     contacts = await state.get_contacts_for_company(cid)
     assert len(contacts) == 2
+
+
+@pytest.mark.asyncio
+async def test_hand_verify_guess_address(state):
+    guess = await state.add_prospect(Prospect(first_name="Jo", last_name="Smit", title="CEO",
+                                              email="jo@acme.nl", email_status="guess"))
+    await state.add_prospect(Prospect(first_name="An", last_name="Bos", title="CTO",
+                                      email="an@acme.nl", email_status="verified"))
+    todo = await state.get_prospects_by_email_status(["guess"])
+    assert [p.id for p in todo] == [guess]
+
+    await state.update_prospect_email(guess, "jo@acme.nl", "verified")
+    assert await state.get_prospects_by_email_status(["guess"]) == []
+    assert (await state.get_prospect(guess)).email_verified
