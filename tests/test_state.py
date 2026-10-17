@@ -127,3 +127,25 @@ async def test_hand_verify_guess_address(state):
     await state.update_prospect_email(guess, "jo@acme.nl", "verified")
     assert await state.get_prospects_by_email_status(["guess"]) == []
     assert (await state.get_prospect(guess)).email_verified
+
+
+@pytest.mark.asyncio
+async def test_guessed_prospect_does_not_block_prospecting(state):
+    from harvey.main import decide_next_action
+
+    pid = await state.add_prospect(Prospect(first_name="Jo", last_name="Smit", title="CEO",
+                                            email="jo@acme.nl", email_status="guess"))
+    assert await decide_next_action(None, state, None) == "prospect"
+
+    await state.update_prospect_email(pid, "jo@acme.nl", "verified")
+    assert await decide_next_action(None, state, None) == "write_campaign"
+
+
+def test_unwrap_bing_redirect():
+    import base64
+    from harvey.agents.scout import _unwrap_bing
+
+    real = "https://www.example-architecten.nl/team"
+    enc = base64.urlsafe_b64encode(real.encode()).decode().rstrip("=")
+    assert _unwrap_bing(f"https://www.bing.com/ck/a?!&&p=abc&u=a1{enc}&ntb=1") == real
+    assert _unwrap_bing(real) == real

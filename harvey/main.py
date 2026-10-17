@@ -93,13 +93,16 @@ async def decide_next_action(
     new_prospects = prospects.get("new", 0) if isinstance(prospects, dict) else 0
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
     open_conversations = summary.get("open_conversations", 0) or 0
+    # Only prospects the Writer can use. Counting every 'new' one let a single
+    # guessed address win every cycle, so Harvey stopped prospecting for good.
+    writable = summary.get("writable_prospects", 0) or 0
 
     if open_conversations > 0:
         action, reason = "handle_replies", f"{open_conversations} open conversation(s) waiting"
     elif draft_campaigns > 0:
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"
-    elif new_prospects > 0:
-        action, reason = "write_campaign", f"{new_prospects} new prospect(s) with no drafts ready"
+    elif writable > 0:
+        action, reason = "write_campaign", f"{writable} new prospect(s) with a deliverable email"
     elif new_prospects < 20:
         action, reason = "prospect", f"only {new_prospects} new prospect(s); pipeline needs leads"
     else:

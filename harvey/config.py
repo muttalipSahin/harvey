@@ -61,6 +61,9 @@ class ICPConfig(BaseModel):
     # hiring a "Head of Growth" is buying growth tooling). Empty → falls back
     # to `titles`. Used for careers-page scanning and job-board discovery.
     hiring_signals: list[str] = []
+    # Language-COUNTRY the web searches run as, e.g. "nl-NL". Empty → en-US.
+    # Without it a Dutch term like "architectenbureau" returns global noise.
+    search_locale: str = ""
     # Discovery needs a radius, not a place name. Maps each entry in
     # `geography` to "lat,lng,radius_km" — e.g.
     #   "Denver, CO": "39.7392,-104.9903,50"

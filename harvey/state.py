@@ -1837,6 +1837,12 @@ class StateManager:
                 "SELECT COUNT(*) FROM conversations WHERE status = 'open'"
             ) as cursor:
                 open_conversations = (await cursor.fetchone())[0]
+            # Same filter the Writer applies: new prospects it can write for.
+            async with db.execute(
+                "SELECT COUNT(*) FROM prospects WHERE status = 'new' AND email != '' "
+                "AND email_status IN ('verified', 'risky')"
+            ) as cursor:
+                writable_prospects = (await cursor.fetchone())[0]
             async with db.execute(
                 "SELECT claude_calls, codex_calls FROM usage_log WHERE date = ?", (today,)
             ) as cursor:
@@ -1849,6 +1855,7 @@ class StateManager:
             "draft_campaigns": draft_campaigns,
             "active_campaigns": active_campaigns,
             "open_conversations": open_conversations,
+            "writable_prospects": writable_prospects,
             "usage_today": usage_today,  # Claude calls (kept for compatibility)
             "usage_today_by_provider": {"claude": usage_today, "codex": codex_today},
             # Companies discovered but not yet read. The heartbeat profiles

@@ -25,6 +25,7 @@ Hardening notes:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import random
@@ -44,6 +45,25 @@ from harvey.models.prospect import Prospect
 from harvey.state import StateManager
 
 logger = logging.getLogger("harvey.scout")
+
+
+def _unwrap_bing(href: str) -> str:
+    """Bing wraps results as bing.com/ck/a?...&u=a1<base64url of real URL>.
+
+    Left wrapped, every result's domain is bing.com, which the candidate
+    filter drops — so Bing searches "succeeded" with zero companies.
+    """
+    if "bing.com/ck/a" not in href:
+        return href
+    u = parse_qs(urlparse(href).query).get("u", [""])[0]
+    if not u.startswith("a1"):
+        return href
+    try:
+        b64 = u[2:] + "=" * (-len(u[2:]) % 4)
+        return base64.urlsafe_b64decode(b64).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return href
+
 
 # Max queries per cycle to avoid rate limits
 MAX_QUERIES_PER_CYCLE = 3
@@ -152,10 +172,18 @@ class Scout:
         # Job boards first: hiring is the strongest intent signal, and the
         # strategy self-skips when python-jobspy isn't installed.
         strategies.append(("hiring_boards", self._prospect_via_hiring_boards))
-        strategies.append(("profile_search", self._prospect_via_profile_search))
+        # Profile search yields a name + LinkedIn URL only — no company, so
+        # no email can ever be found. Without LinkedIn automation those
+        # prospects are unreachable and just fill the pipeline.
+        if self.config.channels.linkedin.enabled and self.env.linkedin_email:
+            strategies.append(("profile_search", self._prospect_via_profile_search))
         strategies.append(("company_discovery", self._prospect_via_company_discovery))
 
         for name, strategy in strategies:
+            # Budget per strategy, not per cycle: a shared one let the
+            # LinkedIn profile search spend all of it, so company discovery
+            # (the team-page route to real emails) never ran a single query.
+            self._queries_this_cycle = 0
             try:
                 prospects_found += await strategy()
             except Exception as e:
@@ -209,11 +237,17 @@ class Scout:
 
     # ── Central HTTP layer (timeouts, retries, backoff, UA rotation) ──
 
+    def _locale(self) -> tuple[str, str]:
+        """(language, COUNTRY) for searches, from icp.search_locale."""
+        lang, _, cc = (self.config.icp.search_locale or "en-US").partition("-")
+        return lang.lower(), (cc or "US").upper()
+
     def _headers(self, extra: dict | None = None) -> dict:
+        lang, cc = self._locale()
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": f"{lang}-{cc},{lang};q=0.9",
         }
         if extra:
             headers.update(extra)
@@ -363,7 +397,8 @@ class Scout:
         resp = await self._fetch(
             "https://google.serper.dev/search",
             method="POST",
-            json_body={"q": query, "num": MAX_RESULTS_PER_QUERY},
+            json_body={"q": query, "num": MAX_RESULTS_PER_QUERY,
+                       "gl": self._locale()[1].lower(), "hl": self._locale()[0]},
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             retries=2,
         )
@@ -389,7 +424,8 @@ class Scout:
 
     async def _search_duckduckgo(self, query: str) -> list[tuple[str, str]]:
         """Search via DuckDuckGo HTML — free, no rate limiting."""
-        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+        lang, cc = self._locale()
+        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}&kl={cc.lower()}-{lang}"
         resp = await self._fetch(url)
         if resp is None:
             return []
@@ -424,7 +460,9 @@ class Scout:
 
     async def _search_bing(self, query: str) -> list[tuple[str, str]]:
         """Search via Bing HTML scraping — less aggressive than Google."""
-        url = f"https://www.bing.com/search?q={quote_plus(query)}&count={MAX_RESULTS_PER_QUERY}"
+        lang, cc = self._locale()
+        url = (f"https://www.bing.com/search?q={quote_plus(query)}&count={MAX_RESULTS_PER_QUERY}"
+               f"&setlang={lang}&cc={cc}&mkt={lang}-{cc}")
         resp = await self._fetch(url)
         if resp is None:
             return []
@@ -439,7 +477,7 @@ class Scout:
             snippet_el = item.select_one(".b_caption p")
             if not (link and link.get("href")):
                 continue
-            href = self._attr_str(link.get("href"))
+            href = _unwrap_bing(self._attr_str(link.get("href")))
             snippet = snippet_el.get_text().strip() if snippet_el else ""
             if href.startswith("http"):
                 results.append((href, snippet))
@@ -804,11 +842,11 @@ class Scout:
         try:
             companies.extend(await self._find_companies_via_search())
         except Exception as e:
-            logger.debug(f"Company search failed: {e}")
+            logger.warning(f"Scout: company search failed: {e}")
         try:
             companies.extend(await self._find_companies_via_directories())
         except Exception as e:
-            logger.debug(f"Directory discovery failed: {e}")
+            logger.warning(f"Scout: directory discovery failed: {e}")
 
         if not companies:
             logger.info("Scout: No new companies found this cycle.")
@@ -1069,18 +1107,21 @@ class Scout:
                 parts.append(f'"{geo}"')
             # No company_size here: "10-200 employees" as an exact phrase
             # matches almost no site. Size is judged at scoring time instead.
-            parts.append("company")
+            # No English filler either ("company", "top ... companies"): with
+            # non-English terms it pulled in Top40.nl, Zhihu and Baidu.
             queries.append(" ".join(parts))
 
             if geo and industry:
-                queries.append(f'top "{industry}" companies {geo}')
+                # "contact" reads the same in most European languages and
+                # favours a business's own site over a listicle.
+                queries.append(f"{industry} {geo} contact")
 
         # Drop empties / dupes, cap to budget.
         seen = set()
         out = []
         for q in queries:
             q = q.strip()
-            if q and q != "company" and q not in seen:
+            if q and q not in seen:
                 seen.add(q)
                 out.append(q)
         return out[:3]
