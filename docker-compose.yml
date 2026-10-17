@@ -7,7 +7,7 @@ services:
     # front. ponytail: nothing restarts the loop if it dies while the
     # dashboard stays up — use the dashboard's Start, or restart the container.
     command: >
-      sh -c "python -m harvey >> /app/data/harvey.log 2>&1 &
+      sh -c "python -m harvey run >> /app/data/harvey.log 2>&1 &
              echo $$! > /app/data/harvey.pid;
              exec python -m harvey.cli dashboard --host 0.0.0.0"
     ports:
@@ -17,6 +17,9 @@ services:
     volumes:
       # Persist database across restarts
       - ./data:/app/data
+      # Harvey checks for the file itself (no .env = setup wizard), and the
+      # dashboard's Settings tab writes to it.
+      - ./.env:/app/.env
       # Config for editing without rebuild. harvey.local.yaml (written by
       # `harvey train`) must exist before `docker compose up`.
       - ./harvey.yaml:/app/harvey.yaml:ro
