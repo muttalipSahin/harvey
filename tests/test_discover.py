@@ -658,3 +658,30 @@ async def test_an_unmappable_term_is_reported_not_silently_skipped(
                                                      coordinate="1,2,40")])
     assert report.found == 0
     assert report.errors and "no category" in report.errors[0]
+
+
+def test_osm_maps_dutch_trades_and_searches_a_whole_country():
+    provider = D.OpenStreetMap()
+    assert provider._tags("dakdekkersbedrijf") == ["craft=roofer"]
+    assert provider._tags("elektrotechnisch installateur") == ["craft=electrician"]
+    assert provider._tags("architectenbureau") == ["office=architect"]
+    assert provider._tags("webshop") == []
+
+    body = provider._query_body("area:nl", ["craft=roofer"], 50)
+    assert 'area["ISO3166-1"="NL"][admin_level=2]->.a;' in body
+    assert "node[craft=roofer](area.a);" in body and "around:" not in body
+    assert "around:40000,39.7,-104.9" in provider._query_body("39.7,-104.9,40", ["craft=roofer"], 50)
+
+
+@pytest.mark.asyncio
+async def test_osm_skips_branded_chain_branches():
+    def handler(request):
+        return httpx.Response(200, json={"elements": [
+            {"type": "node", "id": 1, "tags": {"name": "Gamma", "shop": "trade", "brand": "Gamma"}},
+            {"type": "node", "id": 2, "tags": {"name": "Bouwbedrijf De Vries", "craft": "builder"}},
+        ]})
+
+    async with _client(handler) as client:
+        out = await D.OpenStreetMap().fetch(client, {}, D.DiscoveryQuery(
+            term="bouwbedrijf", coordinate="area:NL"))
+    assert [b.name for b in out] == ["Bouwbedrijf De Vries"]

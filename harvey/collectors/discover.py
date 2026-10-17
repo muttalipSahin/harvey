@@ -496,6 +496,26 @@ class OpenStreetMap(DiscoveryProvider):
         "attorney": ['office=lawyer'],
         "contractor": ['craft=builder', 'office=construction_company'],
         "landscap": ['craft=gardener', 'shop=garden_centre'],
+        # Dutch. First match wins, so the more specific needles come first
+        # ("elektrotechnisch installateur" is an electrician, not any installer).
+        "dakdek": ['craft=roofer'],
+        "elektro": ['craft=electrician'],
+        "loodgiet": ['craft=plumber'],
+        "installat": ['craft=plumber', 'craft=hvac', 'craft=electrician'],
+        "bouwmateria": ['shop=trade'],
+        "aannem": ['craft=builder', 'office=construction_company'],
+        "bouwbedrijf": ['craft=builder', 'office=construction_company'],
+        "renovatie": ['craft=builder'],
+        "architect": ['office=architect'],
+        "accountant": ['office=accountant'],
+        "advoca": ['office=lawyer'],
+        "ingenieur": ['office=engineer'],
+        "adviesbureau": ['office=consulting'],
+        "makelaar": ['office=estate_agent'],
+        "software": ['office=it'],
+        "groothandel": ['shop=wholesale'],
+        "logistiek": ['office=logistics'],
+        "transport": ['office=logistics'],
     }
 
     def _tags(self, term: str) -> list[str]:
@@ -514,6 +534,27 @@ class OpenStreetMap(DiscoveryProvider):
                 return tags
         return []
 
+    @staticmethod
+    def _query_body(coordinate: str, tags: list[str], limit: int) -> str:
+        """Overpass QL for a "lat,lng,radius_km" circle or a whole country.
+
+        "area:NL" (an ISO 3166-1 code, set in icp.geo_coordinates) searches
+        inside that country's border — every city, and nothing across it.
+        """
+        if coordinate.startswith("area:"):
+            code = coordinate.split(":", 1)[1].strip().upper()
+            prefix = f'area["ISO3166-1"="{code}"][admin_level=2]->.a;'
+            where, timeout = "(area.a)", 120
+        else:
+            lat, lng, radius_km = (coordinate.split(",") + ["", "", ""])[:3]
+            radius_m = int(float(radius_km or 25) * 1000)
+            prefix, where, timeout = "", f"(around:{radius_m},{lat},{lng})", 40
+        clauses = "".join(
+            f'node[{k}={v}]{where};way[{k}={v}]{where};'
+            for k, v in (tag.split("=", 1) for tag in tags)
+        )
+        return f"[out:json][timeout:{timeout}];{prefix}({clauses});out center {limit};"
+
     async def fetch(self, client, env, query):
         if not query.coordinate:
             logger.warning("osm: no coordinate for %r — Overpass needs a "
@@ -525,14 +566,7 @@ class OpenStreetMap(DiscoveryProvider):
                 f"OpenStreetMap has no category for {query.term!r}. It can only "
                 f"search mapped trades ({', '.join(sorted(self.TAG_MAP))}). Use a "
                 f"listings or SERP provider for this one.")
-        lat, lng, radius_km = (query.coordinate.split(",") + ["", "", ""])[:3]
-        radius_m = int(float(radius_km or 25) * 1000)
-        clauses = "".join(
-            f'node[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat},{lng});'
-            f'way[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat},{lng});'
-            for tag in tags
-        )
-        body = f"[out:json][timeout:40];({clauses});out center {query.limit};"
+        body = self._query_body(query.coordinate, tags, query.limit)
 
         # Overpass is a free volunteer service and 429s/504s readily under
         # load. Walk the mirrors, then RAISE: returning [] would make a
@@ -566,7 +600,9 @@ class OpenStreetMap(DiscoveryProvider):
         for el in r.json().get("elements") or []:
             tags = el.get("tags") or {}
             name = tags.get("name") or ""
-            if not name:
+            # A brand tag marks a chain branch (Action, Gamma, Hornbach):
+            # never a small business, and its site is the head office's.
+            if not name or tags.get("brand") or tags.get("brand:wikidata"):
                 continue
             site = tags.get("website") or tags.get("contact:website") or ""
             city = ", ".join(x for x in (tags.get("addr:city"),
