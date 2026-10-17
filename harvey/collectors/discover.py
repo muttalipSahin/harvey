@@ -583,7 +583,9 @@ class OpenStreetMap(DiscoveryProvider):
             except httpx.HTTPError as e:
                 logger.warning("osm: %s unreachable (%s)", endpoint, e)
                 continue
-            if r.status_code not in (429, 504):
+            # 500/502/503 too: a heavy query (a whole country) overloads one
+            # instance while a mirror answers it fine.
+            if r.status_code not in (429, 500, 502, 503, 504):
                 break
             logger.warning("osm: %s is throttling (%s) — trying the next mirror",
                            endpoint, r.status_code)
