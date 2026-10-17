@@ -124,7 +124,10 @@ async def get_setup_status():
     # 1. Venv
     checks.append({
         "id": "venv", "label": "Python virtual environment",
-        "done": (PROJECT_ROOT / ".venv").is_dir(),
+        # A Docker image (or any other venv) installs deps without a .venv
+        # folder; flagging that as unfinished setup is a false alarm.
+        "done": ((PROJECT_ROOT / ".venv").is_dir() or sys.prefix != sys.base_prefix
+                 or Path("/.dockerenv").exists()),
         "required": True,
         "help": "Run: python3 -m venv .venv && source .venv/bin/activate && pip install -e .",
     })
@@ -1106,7 +1109,9 @@ async def get_today():
                 "detail": ("Reading their websites is free and it is what makes "
                            "an email specific — who their agency is, what they "
                            "are missing, whether they are spending on ads."),
-                "action": "Read their sites", "tab": "discover",
+                # The Discover tab has no list or button for this, so the
+                # card starts the (free) profile run itself.
+                "action": "Read their sites", "run": "/api/profile/run",
             })
 
         if pending:

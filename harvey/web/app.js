@@ -205,10 +205,24 @@ async function loadToday() {
         '<div class="qtitle">' + escHtml(it.title) + '</div>' +
         '<div class="qdetail">' + escHtml(it.detail) + '</div>' +
       '</div>' +
-      '<button class="btn btn-secondary btn-sm" onclick="goTab(\'' + escHtml(it.tab) + '\')">' +
+      '<button class="btn btn-secondary btn-sm" onclick="' +
+        (it.run ? 'runTodayAction(this, \'' + escHtml(it.run) + '\')'
+                : 'goTab(\'' + escHtml(it.tab) + '\')') + '">' +
         escHtml(it.action) + '</button>' +
     '</div>'
   ).join('') + '</div>';
+}
+
+async function runTodayAction(btn, path) {
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  const data = await api(path, { method: 'POST' });
+  if (data && data.success) {
+    showToast('Started — refresh in a minute to see the result.', 'success');
+  } else {
+    showToast((data && data.message) || 'Could not start.', 'error');
+    btn.disabled = false;
+  }
 }
 
 function renderFigures(stats) {
